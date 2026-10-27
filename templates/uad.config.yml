@@ -1,0 +1,7 @@
+# 放在项目根目录。新项目接入只需改这里 + 复制 templates/workflows/*.yml 与 gh-aw/uad-fix.md
+stack: node            # node | python | android | web | wechat-miniprogram
+test:
+  tier_a: "bash .uad-framework/adapters/node/run.sh A"   # CI 中的命令
+  related: "node --test test/unit"                       # AI 复现/验证用的本地命令
+policy:
+  b_paths: [docs/business-rules.md]

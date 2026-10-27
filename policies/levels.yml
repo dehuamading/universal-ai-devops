@@ -1,0 +1,16 @@
+# 修改等级策略（机器可读，供 uad-classify-change 与文档引用）
+A:
+  description: 普通错误，允许自动修复（独立分支 + 草稿 PR）
+  examples: [明确代码错误, 小范围逻辑错误, 测试脚本错误（不改变断言含义）, 不改变业务规则的状态错误, 已有测试能验证的问题]
+B:
+  description: 重要修改，只分析并提出方案，需人工批准
+  examples: [新增或删除功能, 改变核心业务规则, 大规模重构, 修改重要 API, 更换模型, 改变关键架构, 影响多个核心模块, 测试互相矛盾]
+  paths_default: ["docs/business-rules.md", "uad.config.yml"]
+C:
+  description: 受保护操作，禁止（需单独批准）
+  examples: [合并 main, 修改稳定发布版本, 正式部署, 删除重要数据, 强制推送, 修改生产密钥和权限, 新增明显付费成本]
+enforcement:
+  - main 规则集：必须 PR、禁止强推/删除、必需状态检查、需 1 个批准（沙箱）；无绕过者
+  - 智能体 job 权限只读；写操作只经 gh-aw safe-outputs（草稿 PR / issue / 评论 / 指定标签）
+  - safe-outputs 不配置 merge-pull-request
+  - uad-guard 补丁守卫：禁止改 .github/、AGENTS.md、业务规则文件；禁止删除/弱化测试；禁止密钥

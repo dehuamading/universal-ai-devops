@@ -1,0 +1,84 @@
+# 可复用：AI 调用闸门。只有通过全部检查才会触发 AI 修复工作流。
+# 检查顺序：测试结论 → 总开关 → 预算（DeepSeek 余额实测）→ 每日次数 → 同一问题次数 → 触发
+name: uad-gate
+on:
+  workflow_call:
+    inputs:
+      kind: {type: string, required: true}          # pass | test | env | request
+      signature: {type: string, default: ""}
+      source_run_id: {type: string, default: ""}
+      issue_number: {type: string, default: ""}
+      ref: {type: string, required: true}
+      fix-workflow: {type: string, default: "uad-fix.lock.yml"}
+    secrets:
+      DEEPSEEK_API_KEY: {required: true}
+permissions:
+  contents: read
+  actions: write
+  issues: write
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BUDGET_STOP: ${{ vars.UAD_BUDGET_STOP_CNY || '6' }}
+      BAL_START: ${{ vars.UAD_BALANCE_START }}
+      MAX_PER_DAY: ${{ vars.UAD_MAX_AI_RUNS_PER_DAY || '3' }}
+      AI_ENABLED: ${{ vars.UAD_AI_ENABLED }}
+    steps:
+      - name: 1 测试结论
+        id: kind
+        run: |
+          case "${{ inputs.kind }}" in
+            pass) echo "测试通过，不调用 AI" | tee -a $GITHUB_STEP_SUMMARY; echo go=no >> $GITHUB_OUTPUT;;
+            env)  echo "环境问题：只报告，不调用 AI、不改代码" | tee -a $GITHUB_STEP_SUMMARY; echo go=env >> $GITHUB_OUTPUT;;
+            test|request) echo go=yes >> $GITHUB_OUTPUT;;
+            *) echo "未知结论"; exit 1;;
+          esac
+      - name: 环境问题报告
+        if: steps.kind.outputs.go == 'env'
+        run: |
+          gh label create uad-env --color BFD4F2 -d "UAD: 环境问题" 2>/dev/null || true
+          gh issue create -t "[uad-env] 测试环境问题（run ${{ inputs.source_run_id }}）" -l uad-env \
+            -b "测试因环境问题失败（依赖安装或工具异常），未调用 AI，未修改代码。请查看 https://github.com/${GH_REPO}/actions/runs/${{ inputs.source_run_id }}"
+      - name: 2 总开关
+        if: steps.kind.outputs.go == 'yes'
+        run: |
+          if [ "$AI_ENABLED" != "true" ]; then echo "::warning::UAD_AI_ENABLED 不是 true，停止付费调用"; echo "AI 已关闭（UAD_AI_ENABLED≠true）" >> $GITHUB_STEP_SUMMARY; exit 1; fi
+      - name: 3 预算（查询 DeepSeek 实际余额）
+        if: steps.kind.outputs.go == 'yes'
+        env: {DSK: "${{ secrets.DEEPSEEK_API_KEY }}"}
+        run: |
+          [ -n "$BAL_START" ] || { echo "::error::未设置 UAD_BALANCE_START，无法执行预算控制 → 停止"; exit 1; }
+          cur=$(curl -sf -m 20 -H "Authorization: Bearer $DSK" https://api.deepseek.com/user/balance | python3 -c "import json,sys;d=json.load(sys.stdin);print(sum(float(b['total_balance']) for b in d['balance_infos'] if b['currency']=='CNY'))") \
+            || { echo "::error::余额查询失败 → 无法可靠控制费用，停止"; exit 1; }
+          spent=$(python3 -c "print(round($BAL_START-$cur,4))")
+          echo "余额起点 ¥$BAL_START，当前 ¥$cur，已用 ¥$spent，停止线 ¥$BUDGET_STOP（总预算 ¥10）" | tee -a $GITHUB_STEP_SUMMARY
+          python3 -c "import sys;sys.exit(0 if $spent < $BUDGET_STOP else 1)" || { echo "::error::达到预算停止线，停止付费调用"; exit 1; }
+      - name: 4 每日次数上限
+        if: steps.kind.outputs.go == 'yes'
+        run: |
+          today=$(date -u +%F)
+          n=$(gh run list -w "${{ inputs.fix-workflow }}" -L 50 --json createdAt -q "[.[]|select(.createdAt|startswith(\"$today\"))]|length" 2>/dev/null || echo 0)
+          echo "今日（UTC）已触发 AI 运行 $n 次，上限 $MAX_PER_DAY" | tee -a $GITHUB_STEP_SUMMARY
+          [ "$n" -lt "$MAX_PER_DAY" ] || { echo "::error::达到每日 AI 运行上限"; exit 1; }
+      - name: 5 同一问题次数（每个签名只允许 1 次 AI 运行，运行内最多 2 次修复尝试）
+        if: steps.kind.outputs.go == 'yes'
+        id: track
+        run: |
+          key="${{ inputs.signature }}"; [ "${{ inputs.kind }}" = request ] && key="issue-${{ inputs.issue_number }}"
+          gh label create uad-track --color EDEDED -d "UAD: 问题跟踪" 2>/dev/null || true
+          if gh issue list -l uad-track -s all -S "in:title [uad-track] $key" --json number -q '.[].number' | grep -q .; then
+            echo "::error::问题 $key 已经自动处理过（最多 2 次尝试已用完或已处理），停止，需人工介入"; exit 1; fi
+          url=$(gh issue create -t "[uad-track] $key" -l uad-track -b "UAD 自动修复跟踪。来源 run：${{ inputs.source_run_id }}，ref：${{ inputs.ref }}。同一问题最多 2 次自动修复尝试；此 issue 存在即表示已用掉本问题的 AI 运行配额。")
+          echo "num=${url##*/}" >> $GITHUB_OUTPUT
+      - name: 6 触发 AI 修复工作流
+        if: steps.kind.outputs.go == 'yes'
+        run: |
+          gh workflow run "${{ inputs.fix-workflow }}" --ref "${{ inputs.ref }}" \
+            -f mode="$([ "${{ inputs.kind }}" = request ] && echo request || echo fix)" \
+            -f source_run_id="${{ inputs.source_run_id }}" -f signature="${{ inputs.signature }}" \
+            -f issue_number="${{ inputs.issue_number }}" -f track_issue="${{ steps.track.outputs.num }}"
+          echo "已触发 AI 修复（跟踪 issue #${{ steps.track.outputs.num }}）" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,69 @@
+# 可复用：对 AI 创建的草稿 PR 运行回归测试（解决 GITHUB_TOKEN 创建的 PR 不触发 CI 的问题）。
+# 由调用方在 workflow_run(uad-fix completed) 时调用；只用 GITHUB_TOKEN，不需要新的 PAT。
+name: uad-regression
+on:
+  workflow_call:
+    inputs:
+      stack: {type: string, required: true}
+      tier: {type: string, default: "A"}
+      status-context: {type: string, default: "test / run"}
+      framework-ref: {type: string, default: "main"}
+permissions:
+  contents: read
+  statuses: write
+  pull-requests: write
+  issues: write
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    outputs: {prs: "${{ steps.f.outputs.prs }}"}
+    steps:
+      - id: f
+        env: {GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}"}
+        run: |
+          prs=$(gh pr list -l uad-fix -s open --json number,headRefOid,headRefName,baseRefName,isDraft -q '[.[]|select(.isDraft)]')
+          echo "prs=$prs" >> "$GITHUB_OUTPUT"; echo "待回归的 AI 草稿 PR：$prs" >> "$GITHUB_STEP_SUMMARY"
+  regress:
+    needs: find
+    if: needs.find.outputs.prs != '[]' && needs.find.outputs.prs != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix: {pr: "${{ fromJSON(needs.find.outputs.prs) }}"}
+    env: {GH_TOKEN: "${{ github.token }}", GH_REPO: "${{ github.repository }}"}
+    steps:
+      - uses: actions/checkout@v5
+        with: {ref: "${{ matrix.pr.headRefOid }}", fetch-depth: 0, persist-credentials: false}
+      - uses: actions/checkout@v5
+        with: {repository: dehuamading/universal-ai-devops, ref: "${{ inputs.framework-ref }}", path: .uad-framework, persist-credentials: false}
+      - if: inputs.stack == 'node'
+        uses: actions/setup-node@v5
+        with: {node-version: 22}
+      - if: inputs.stack == 'python'
+        uses: actions/setup-python@v6
+        with: {python-version: "3.12"}
+      - name: 状态置为 pending
+        run: gh api repos/$GH_REPO/statuses/${{ matrix.pr.headRefOid }} -f state=pending -f context="${{ inputs.status-context }}" -f description="UAD 回归测试运行中" >/dev/null
+      - name: 补丁守卫 + 回归测试
+        id: r
+        env: {UAD_OUT: .uad-out}
+        run: |
+          set +e; mkdir -p .uad-out
+          git diff "origin/${{ matrix.pr.baseRefName }}...HEAD" > .uad-out/pr.patch
+          python3 .uad-framework/tools/uad-guard.py .uad-out/pr.patch > .uad-out/guard.txt; g=$?
+          bash .uad-framework/adapters/${{ inputs.stack }}/run.sh "${{ inputs.tier }}" > .uad-out/regress.log 2>&1; t=$?
+          cat .uad-out/guard.txt .uad-out/regress.log
+          echo "g=$g" >> $GITHUB_OUTPUT; echo "t=$t" >> $GITHUB_OUTPUT
+      - name: 写入状态与中文报告
+        if: always()
+        run: |
+          g=${{ steps.r.outputs.g }}; t=${{ steps.r.outputs.t }}
+          if [ "$g" = 0 ] && [ "$t" = 0 ]; then st=success; msg="回归通过"; else st=failure; msg="回归未通过（守卫=$g，测试=$t）"; fi
+          gh api repos/$GH_REPO/statuses/${{ matrix.pr.headRefOid }} -f state=$st -f context="${{ inputs.status-context }}" \
+            -f description="$msg" -f target_url="${{ github.server_url }}/$GH_REPO/actions/runs/${{ github.run_id }}" >/dev/null
+          { echo "## UAD 自动回归测试结果：$msg"; echo; echo "- 提交：\`${{ matrix.pr.headRefOid }}\`（目标分支 ${{ matrix.pr.baseRefName }}）"; echo "- 运行：${{ github.server_url }}/$GH_REPO/actions/runs/${{ github.run_id }}"
+            echo "- 补丁守卫（禁止弱化/删除测试、禁止改 CI 与受保护文件）："; echo '```'; cat .uad-out/guard.txt; echo '```'
+            echo "- 测试（${{ inputs.tier }} 级）末尾："; echo '```'; tail -n 25 .uad-out/regress.log; echo '```'
+            echo; echo "此 PR 为草稿，需人工审查批准后才能合并；AI 无合并权限。"; } > body.md
+          gh pr comment ${{ matrix.pr.number }} -F body.md
+          [ $st = success ]

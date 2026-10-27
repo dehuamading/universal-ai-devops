@@ -1,0 +1,56 @@
+# 可复用：运行适配器测试，生成失败证据（不调用 AI，零 AI 费用）
+name: uad-test
+on:
+  workflow_call:
+    inputs:
+      stack: {type: string, required: true}        # node | python | ...
+      tier: {type: string, default: "A"}           # A | B | C
+      ref: {type: string, default: ""}             # 可选：要测试的 ref/sha
+      framework-ref: {type: string, default: "main"}
+    outputs:
+      kind: {description: "pass | test | env", value: "${{ jobs.run.outputs.kind }}"}
+      signature: {description: "失败签名（失败用例名的哈希）", value: "${{ jobs.run.outputs.signature }}"}
+permissions:
+  contents: read
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      kind: ${{ steps.t.outputs.kind }}
+      signature: ${{ steps.t.outputs.signature }}
+    steps:
+      - uses: actions/checkout@v5
+        with: {ref: "${{ inputs.ref }}", persist-credentials: false}
+      - uses: actions/checkout@v5
+        with: {repository: dehuamading/universal-ai-devops, ref: "${{ inputs.framework-ref }}", path: .uad-framework, persist-credentials: false}
+      - if: inputs.stack == 'node'
+        uses: actions/setup-node@v5
+        with: {node-version: 22}
+      - if: inputs.stack == 'python'
+        uses: actions/setup-python@v6
+        with: {python-version: "3.12"}
+      - id: t
+        env: {UAD_OUT: .uad-out}
+        run: |
+          set +e
+          bash .uad-framework/adapters/${{ inputs.stack }}/run.sh "${{ inputs.tier }}" 2>&1 | tee .uad-out/console.log
+          rc=${PIPESTATUS[0]}
+          case $rc in 0) kind=pass;; 10) kind=test;; *) kind=env;; esac
+          grep -hE '^not ok|^FAILED|^ERROR ' .uad-out/console.log | sed -E 's/ - .*//;s/ # .*//' | sort -u > .uad-out/failing.txt
+          sig=$(sha256sum .uad-out/failing.txt | cut -c1-12)
+          python3 - "$kind" "$sig" "$rc" <<'PY'
+          import json,sys,os
+          k,s,rc=sys.argv[1:]
+          json.dump({"kind":k,"signature":s,"exit_code":int(rc),"sha":os.environ.get("GITHUB_SHA"),"ref":os.environ.get("GITHUB_REF_NAME"),
+                     "failing":open(".uad-out/failing.txt").read().splitlines()},open(".uad-out/failure-summary.json","w"),ensure_ascii=False,indent=1)
+          PY
+          echo "kind=$kind" >> "$GITHUB_OUTPUT"; echo "signature=$sig" >> "$GITHUB_OUTPUT"
+          { echo "### UAD 测试结果（${{ inputs.stack }} / ${{ inputs.tier }} 级）"; echo "- 结论：$kind（0=通过，test=测试失败，env=环境问题）"; echo "- 失败签名：$sig"; echo '```'; cat .uad-out/failing.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: uad-evidence, path: .uad-out/, retention-days: 14, include-hidden-files: true}
+      - name: 结果判定
+        if: steps.t.outputs.kind != 'pass'
+        run: echo "::error::测试未通过（${{ steps.t.outputs.kind }}）"; exit 1

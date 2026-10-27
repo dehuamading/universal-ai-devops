@@ -1,0 +1,8 @@
+{
+  "name": "universal-ai-devops",
+  "version": "0.1.0",
+  "description": "通用 AI 自动开发/测试/修复框架：规则、技能、可复用工作流与适配器（基于 Superpowers + gh-aw）",
+  "keywords": ["pi-package", "skills"],
+  "license": "MIT",
+  "pi": { "skills": ["./skills"] }
+}

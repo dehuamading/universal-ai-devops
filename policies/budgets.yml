@@ -1,0 +1,19 @@
+# 费用与次数上限（默认值；可用仓库 Variables 覆盖）
+model: deepseek-flash            # DeepSeek V4.1 Flash；禁止 deepseek-v4-pro
+per_run:
+  max_turns: 20                  # gh-aw max-turns（AWF 代理强制）
+  max_tool_calls: 60
+  timeout_minutes: 15
+per_issue:
+  max_ai_runs: 1                 # uad-gate：同一失败签名只触发 1 次 AI 运行
+  max_fix_attempts: 2            # 运行内最多 2 次尝试，失败回退
+per_repo_day:
+  max_ai_runs: 3                 # vars.UAD_MAX_AI_RUNS_PER_DAY
+budget:
+  total_cny: 10                  # 本阶段总预算
+  stop_cny: 6                    # vars.UAD_BUDGET_STOP_CNY：已用 ≥ 此值即停止（为单次运行最坏情况预留）
+  source: DeepSeek /user/balance 实际余额（账户级，覆盖所有仓库）与 vars.UAD_BALANCE_START 之差
+kill_switch: vars.UAD_AI_ENABLED 必须为 "true"
+pricing_usd_per_mtok:            # 官方价格（2026-10-27 核对 https://api-docs.deepseek.com/quick_start/pricing/）
+  off_peak: {input_miss: 0.15, input_hit: 0.003, output: 0.60}
+  peak:     {input_miss: 0.30, input_hit: 0.006, output: 1.20}   # 周一至五 UTC 01-04、06-10（美东 21-24、02-06）
