@@ -16,6 +16,11 @@ mkdir $T/d; cp $T/a/x.patch $T/d/; bash tools/uad-detect.sh /nonexistent $T/d >/
 ok '[ $rc -eq 0 ] && [ "$(v $T/d malicious_patch)" = True ]' "守卫不可用 → 失败即关闭（malicious_patch=true）"
 mkdir $T/e; bash tools/uad-detect.sh tools/uad-guard.py $T/e >/dev/null
 ok '[ -s $T/e/detection_result.json ]' "无补丁 → 仍写出判定"
+if [ -n "${THREAT_DETECT:-}" ]; then   # 用 gh-aw 官方 threat-detect conclude 验证判定文件可被解析
+  for c in a b; do o=$T/$c.out; : > $o; GITHUB_OUTPUT=$o GITHUB_STEP_SUMMARY=/dev/null RUN_DETECTION=true GH_AW_DETECTION_CONTINUE_ON_ERROR=true "$THREAT_DETECT" conclude --result-file $T/$c/detection_result.json >/dev/null 2>&1; done
+  ok 'grep -q "^conclusion=success" $T/a.out' "threat-detect conclude：正常补丁 → conclusion=success（不再是 engine error）"
+  ok 'grep -q "^reason=threat_detected" $T/b.out && ! grep -q "reason=agent_failure" $T/b.out' "threat-detect conclude：违规补丁 → threat_detected（不是引擎故障）"
+fi
 for L in ${UAD_LOCKS:-}; do
   ok 'grep -q "uad-detect.sh" "$L" && grep -q "id: detection_agentic_execution" "$L"' "编译断言: $L 的 detection 作业包含 uad-detect.sh 判定步骤"
 done

@@ -7,4 +7,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: bash tests/test-signature.sh
-      - run: bash tests/test-detect.sh
+      - name: 下载 gh-aw 固定版本 threat-detect（校验 sha256）
+        run: |
+          curl -fsSL -o /tmp/threat-detect https://github.com/github/gh-aw-threat-detection/releases/download/v0.5.3/threat-detect-linux-amd64
+          sha256sum /tmp/threat-detect | grep -q '^7cfab3bd02717968a0584ddd3790cff22550059e36d6f656c4f35e9d278' && chmod +x /tmp/threat-detect
+      - run: THREAT_DETECT=/tmp/threat-detect bash tests/test-detect.sh
