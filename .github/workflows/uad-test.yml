@@ -37,7 +37,7 @@ jobs:
           bash .uad-framework/adapters/${{ inputs.stack }}/run.sh "${{ inputs.tier }}" 2>&1 | tee .uad-out/console.log
           rc=${PIPESTATUS[0]}
           case $rc in 0) kind=pass;; 10) kind=test;; *) kind=env;; esac
-          grep -hE '^not ok|^FAILED|^ERROR ' .uad-out/console.log | sed -E 's/ - .*//;s/ # .*//' | sort -u > .uad-out/failing.txt
+          grep -hE '^\s*not ok|^FAILED|^ERROR ' .uad-out/console.log | sed -E 's/^\s+//;s/^not ok [0-9]+ - /not ok /;s/ # .*//;s/ - [A-Z][a-zA-Z]*Error.*//' | sort -u > .uad-out/failing.txt
           sig=$(sha256sum .uad-out/failing.txt | cut -c1-12)
           python3 - "$kind" "$sig" "$rc" <<'PY'
           import json,sys,os
