@@ -1,5 +1,6 @@
 ---
 name: uad-fix
+run-name: "uad-fix track#${{ inputs.track_issue }} ${{ inputs.mode }} ${{ inputs.signature }}"
 description: UAD 自动修复（Pi + DeepSeek V4.1 Flash + Superpowers）。只能由 uad-gate 触发；只读运行，写操作仅草稿 PR / issue / 评论。
 on:
   workflow_dispatch:
