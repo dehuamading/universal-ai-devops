@@ -20,6 +20,11 @@ permissions:
 concurrency:
   group: uad-fix-${{ github.repository }}
   cancel-in-progress: false
+models:
+  # AWF API 代理需要价格表才能核算非内置模型（DeepSeek 官方价，USD/百万 token）
+  default-ai-credits-pricing:
+    input: 0.15
+    output: 0.6
 timeout-minutes: 15
 max-turns: 20
 max-tool-calls: 60
@@ -52,12 +57,13 @@ safe-outputs:
   threat-detection:
     engine: false
     post-steps:
-      - name: UAD 确定性补丁守卫（替代 Copilot 威胁检测）
+      - name: UAD 确定性威胁检测（写出 gh-aw 判定文件）
+        id: detection_agentic_execution
         run: |
-          curl -sfL https://raw.githubusercontent.com/dehuamading/universal-ai-devops/main/tools/uad-guard.py -o /tmp/uad-guard.py
-          shopt -s nullglob; P=(/tmp/gh-aw/threat-detection/*.patch)
-          if [ ${#P[@]} -eq 0 ]; then echo "无补丁"; exit 0; fi
-          python3 /tmp/uad-guard.py "${P[@]}"
+          B="https://raw.githubusercontent.com/dehuamading/universal-ai-devops/${{ vars.UAD_FRAMEWORK_REF || 'main' }}/tools"
+          curl -sfL "$B/uad-guard.py" -o /tmp/uad-guard.py || rm -f /tmp/uad-guard.py
+          curl -sfL "$B/uad-detect.sh" -o /tmp/uad-detect.sh
+          bash /tmp/uad-detect.sh /tmp/uad-guard.py /tmp/gh-aw/threat-detection
   create-pull-request:
     draft: true
     title-prefix: "[uad-fix] "
